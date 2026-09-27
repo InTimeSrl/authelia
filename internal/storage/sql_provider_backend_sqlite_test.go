@@ -81,3 +81,29 @@ func TestSQLiteRegisteredFuncs(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, []byte("example"), decoded)
 }
+
+func TestSQLiteProviderSchemaEncryptionRotateHMACKey(t *testing.T) {
+	testCases := []struct {
+		name  string
+		table string
+	}{
+		{hmacNameSession, tableSession},
+		{hmacNameOneTimeCode, tableOneTimeCode},
+		{hmacNameOneTimePassword, tableTOTPHistory},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, provider := newTestSessionProvider(t)
+
+			require.NoError(t, provider.SessionSave(ctx, "an-issuer", "a-signature", "a-public-id", "john", time.Hour, []byte("data")))
+
+			require.NoError(t, provider.SchemaEncryptionRotateHMACKey(ctx, tc.name))
+
+			var count int
+
+			require.NoError(t, provider.db.GetContext(ctx, &count, "SELECT COUNT(*) FROM "+tc.table+";"))
+			assert.Equal(t, 0, count)
+		})
+	}
+}

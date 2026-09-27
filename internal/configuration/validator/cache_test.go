@@ -114,6 +114,29 @@ func TestValidateCache(t *testing.T) {
 			nil,
 		},
 		{
+			"ShouldResetNegativeRedisSentinelPoolSizeToClientDefault",
+			schema.Cache{RedisSentinel: &schema.RedisSentinelCache{
+				MasterName: "mysentinel",
+				Addresses:  []*schema.AddressTCP{mustAddressTCP("tcp://sentinel1:26379")},
+				PoolSize:   -1,
+			}},
+			func(t *testing.T, have schema.Cache) {
+				assert.Equal(t, 0, have.RedisSentinel.PoolSize)
+			},
+			nil,
+		},
+		{
+			"ShouldResetNegativeRedisClusterPoolSizeToClientDefault",
+			schema.Cache{RedisCluster: &schema.RedisClusterCache{
+				Addresses: []*schema.AddressTCP{mustAddressTCP("tcp://node1:7000")},
+				PoolSize:  -1,
+			}},
+			func(t *testing.T, have schema.Cache) {
+				assert.Equal(t, 0, have.RedisCluster.PoolSize)
+			},
+			nil,
+		},
+		{
 			"ShouldDefaultRedisConnectionLifetimeJitterToZero",
 			schema.Cache{Redis: &schema.RedisCache{Address: mustAddressTCP("tcp://redis.example.com:6379")}},
 			func(t *testing.T, have schema.Cache) {

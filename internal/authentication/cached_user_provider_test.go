@@ -14,6 +14,7 @@ import (
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/authelia/authelia/v4/internal/clock"
 	"github.com/authelia/authelia/v4/internal/configuration/schema"
@@ -616,4 +617,81 @@ func (m *mockCachedUserProvider) GetDetailsExtended(username string) (*UserDetai
 
 func (m *mockCachedUserProvider) GetDetailsExtendedCached(username string) (*UserDetailsExtended, error) {
 	return m.GetDetailsExtended(username)
+}
+
+func TestCachedUserProvider_ShouldReturnErrorOnUnexpectedSharedResultType(t *testing.T) {
+	testCases := []struct {
+		name  string
+		group func(provider *CachedUserProvider) *singleflight.Group
+		call  func(provider *CachedUserProvider) (any, error)
+	}{
+		{
+			"ShouldHandleDetails",
+			func(provider *CachedUserProvider) *singleflight.Group {
+				return &provider.details.Group
+			},
+			func(provider *CachedUserProvider) (any, error) {
+				return provider.GetDetailsCached("john")
+			},
+		},
+		{
+			"ShouldHandleDetailsExtended",
+			func(provider *CachedUserProvider) *singleflight.Group {
+				return &provider.extended.Group
+			},
+			func(provider *CachedUserProvider) (any, error) {
+				return provider.GetDetailsExtendedCached("john")
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockCachedUserProvider{
+				details:         &UserDetails{Username: "john"},
+				detailsExtended: &UserDetailsExtended{UserDetails: &UserDetails{Username: "john"}},
+			}
+
+			for attempt := 1; attempt <= 10; attempt++ {
+				provider := NewCachedUserProvider(mock, schema.NewRefreshIntervalDuration(5*time.Minute)).(*CachedUserProvider)
+
+				started, release := make(chan struct{}), make(chan struct{})
+
+				go func() {
+					_, _, _ = tc.group(provider).Do("john", func() (any, error) {
+						close(started)
+
+						<-release
+
+						return "not-user-details", nil
+					})
+				}()
+
+				<-started
+
+				done := make(chan error, 1)
+
+				go func() {
+					result, err := tc.call(provider)
+					if err != nil {
+						assert.Nil(t, result)
+					}
+
+					done <- err
+				}()
+
+				time.Sleep(time.Duration(attempt) * 10 * time.Millisecond)
+
+				close(release)
+
+				if err := <-done; err != nil {
+					assert.EqualError(t, err, "error occurred retrieving user details from cache for user 'john'")
+
+					return
+				}
+			}
+
+			t.Fatal("the call never joined the in-flight call")
+		})
+	}
 }

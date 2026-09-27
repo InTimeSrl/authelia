@@ -469,6 +469,157 @@ func TestRedis_SessionGarbageCollectionShouldVisitClusterMasters(t *testing.T) {
 	assert.Error(t, provider.SessionGarbageCollection(ctx))
 }
 
+func TestRedis_Variant(t *testing.T) {
+	testCases := []struct {
+		Name     string
+		Variant  string
+		Expected string
+	}{
+		{"ShouldReturnStandalone", "standalone", "standalone"},
+		{"ShouldReturnSentinel", "sentinel", "sentinel"},
+		{"ShouldReturnCluster", "cluster", "cluster"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.Name, func(t *testing.T) {
+			assert.Equal(t, tc.Expected, NewRedis(&mockRedisCmdable{}, tc.Variant).Variant())
+		})
+	}
+}
+
+func TestRedis_SessionGetByPublicIDShouldReturnErrorWhenTheSessionLookupFails(t *testing.T) {
+	client := &mockRedisCmdable{
+		values:   map[string]string{getSessionPublicKey("example.com", "pid"): "id"},
+		hmgetErr: errors.New("connection refused"),
+	}
+
+	record, err := NewRedis(client, "standalone").SessionGetByPublicID(context.Background(), "example.com", "pid")
+
+	assert.EqualError(t, err, "connection refused")
+	assert.Nil(t, record)
+}
+
+func TestRedis_SessionSaveShouldNotIndexASessionWithoutAPublicIDOrUsername(t *testing.T) {
+	client := &mockRedisCmdable{pipelineErr: errors.New("should not be called")}
+
+	require.NoError(t, NewRedis(client, "standalone").SessionSave(context.Background(), "example.com", "id", "", "", time.Hour, []byte("data")))
+
+	require.Len(t, client.evals, 1)
+	assert.Empty(t, client.sets)
+	assert.Empty(t, client.added)
+}
+
+func TestRedis_SessionDeleteShouldReturnErrorWhenRetiringIndexesFails(t *testing.T) {
+	testCases := []struct {
+		Name      string
+		Results   []any
+		RemoveErr error
+		Error     string
+	}{
+		{
+			"ShouldReturnErrorWhenRetiringThePublicIDFails",
+			[]any{[]any{"pid", "john"}, errors.New("connection refused")},
+			nil,
+			"error removing the session public id index: connection refused",
+		},
+		{
+			"ShouldReturnErrorWhenRetiringTheUsernameFails",
+			[]any{[]any{"pid", "john"}},
+			errors.New("connection refused"),
+			"error removing the session from the username index: connection refused",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.Name, func(t *testing.T) {
+			client := &mockRedisCmdable{evalResults: tc.Results, removeErr: tc.RemoveErr}
+
+			assert.EqualError(t, NewRedis(client, "standalone").SessionDelete(context.Background(), "example.com", "id", "", ""), tc.Error)
+		})
+	}
+}
+
+func TestRedis_SessionChangeIDShouldReturnErrorWhenIndexingFails(t *testing.T) {
+	testCases := []struct {
+		Name        string
+		Results     []any
+		PipelineErr error
+		RemoveErr   error
+		Error       string
+	}{
+		{
+			"ShouldReturnErrorWhenIndexingTheNewSessionFails",
+			[]any{[]any{int64(1), "pid", "john"}},
+			errors.New("connection refused"),
+			nil,
+			"error updating the session indexes: connection refused",
+		},
+		{
+			"ShouldReturnErrorWhenRetiringThePreviousPublicIDFails",
+			[]any{[]any{int64(1), "oldpid", "john"}, []any{int64(1), "", ""}, errors.New("connection refused")},
+			nil,
+			nil,
+			"error removing the session public id index: connection refused",
+		},
+		{
+			"ShouldReturnErrorWhenRetiringThePreviousUsernameFails",
+			[]any{[]any{int64(1), "pid", "john"}},
+			nil,
+			errors.New("connection refused"),
+			"error removing the session from the username index: connection refused",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.Name, func(t *testing.T) {
+			client := &mockRedisCmdable{evalResults: tc.Results, pipelineErr: tc.PipelineErr, removeErr: tc.RemoveErr}
+
+			err := NewRedis(client, "standalone").SessionChangeID(context.Background(), "example.com", "old", "new", "pid", "john", time.Hour, []byte("resealed"))
+
+			assert.EqualError(t, err, tc.Error)
+		})
+	}
+}
+
+func TestRedis_SessionGarbageCollectionShouldCollectEachClusterMaster(t *testing.T) {
+	client := redis.NewClusterClient(&redis.ClusterOptions{
+		ClusterSlots: func(ctx context.Context) ([]redis.ClusterSlot, error) {
+			return []redis.ClusterSlot{{Start: 0, End: 16383, Nodes: []redis.ClusterNode{{Addr: "127.0.0.1:1"}}}}, nil
+		},
+		DialTimeout: time.Millisecond * 100,
+		MaxRetries:  -1,
+	})
+
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	assert.Error(t, NewRedis(client, "cluster").SessionGarbageCollection(ctx))
+}
+
+func TestGetRedisValues(t *testing.T) {
+	testCases := []struct {
+		Name           string
+		Values         []any
+		Index          int
+		ExpectedString string
+		ExpectedInt    int64
+	}{
+		{"ShouldReturnValuesInRange", []any{"value", int64(5)}, 0, "value", 0},
+		{"ShouldReturnIntInRange", []any{"value", int64(5)}, 1, "", 5},
+		{"ShouldReturnZeroValuesOutOfRange", []any{"value"}, 1, "", 0},
+		{"ShouldReturnZeroValuesForNil", nil, 0, "", 0},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.Name, func(t *testing.T) {
+			assert.Equal(t, tc.ExpectedString, getRedisString(tc.Values, tc.Index))
+			assert.Equal(t, tc.ExpectedInt, getRedisInt(tc.Values, tc.Index))
+		})
+	}
+}
+
 func (m *mockRedisCmdable) Ping(ctx context.Context) *redis.StatusCmd {
 	cmd := redis.NewStatusCmd(ctx, "ping")
 

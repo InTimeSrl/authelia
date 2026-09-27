@@ -7,6 +7,8 @@ package session
 import (
 	"testing"
 
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -87,6 +89,39 @@ func TestSecureCodec_SealShouldReturnErrorWhenEncryptionFails(t *testing.T) {
 	assert.EqualError(t, err, "unable to encrypt session: crypto/aes: invalid key size 5")
 }
 
+func TestSecureCodec_SealShouldReturnErrorWhenMarshalFails(t *testing.T) {
+	codec := newTestCodec(t)
+
+	userSession := NewUserSession(testUsername)
+	userSession.WebAuthn = &WebAuthn{
+		SessionData: &webauthn.SessionData{
+			Extensions: protocol.SessionExtensions{
+				Extra: map[string]any{"unsupported": func() {}},
+			},
+		},
+	}
+
+	data, err := codec.Seal(testDomain, "id", userSession)
+
+	assert.Nil(t, data)
+	assert.ErrorContains(t, err, "unable to marshal session: ")
+}
+
+func TestSecureCodec_GeneratePublicIDShouldReturnRandomError(t *testing.T) {
+	codec := newTestCodec(t)
+
+	uuid.SetRand(&failingReader{})
+
+	t.Cleanup(func() {
+		uuid.SetRand(nil)
+	})
+
+	id, err := codec.GeneratePublicID()
+
+	assert.EqualError(t, err, "bad stuff")
+	assert.Empty(t, id)
+}
+
 func TestSecureCodec_OpenShouldIgnoreRecordsWithoutData(t *testing.T) {
 	codec := newTestCodec(t)
 
@@ -131,5 +166,11 @@ type failingRandom struct {
 }
 
 func (r *failingRandom) Read(_ []byte) (n int, err error) {
+	return 0, errTestFailure
+}
+
+type failingReader struct{}
+
+func (r *failingReader) Read(_ []byte) (n int, err error) {
 	return 0, errTestFailure
 }

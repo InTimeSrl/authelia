@@ -399,6 +399,7 @@ type mockRedisCmdable struct {
 	removed     map[string][]any
 	pipelineErr error
 	removeErr   error
+	hmgetErr    error
 }
 
 type mockRedisEval struct {
@@ -476,6 +477,12 @@ func (m *mockRedisCmdable) HMGet(ctx context.Context, key string, fields ...stri
 
 	if m.err != nil {
 		cmd.SetErr(m.err)
+
+		return cmd
+	}
+
+	if m.hmgetErr != nil {
+		cmd.SetErr(m.hmgetErr)
 
 		return cmd
 	}

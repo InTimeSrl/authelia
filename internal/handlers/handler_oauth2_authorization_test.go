@@ -355,6 +355,59 @@ func TestOAuth2AuthorizationGET(t *testing.T) {
 		assert.True(t, userSession.IsAnonymous())
 	})
 
+	t.Run("ShouldReturnAccessDeniedWhenUserNotFoundAndSessionSaveFails", func(t *testing.T) {
+		mock := mocks.NewMockAutheliaCtx(t)
+		defer mock.Close()
+
+		repository := setupTestFailingSessionRepository(t, mock)
+
+		userSession := newTestOIDCUserSession(1)
+
+		require.NoError(t, mock.Ctx.SaveSession(&userSession))
+
+		config := newTestOIDCConfig(t)
+		config.Clients = []schema.IdentityProvidersOpenIDConnectClient{newTestOIDCAuthorizationCodeClient(t)}
+
+		setupTestOIDCProvider(t, mock, config)
+
+		mock.UserProviderMock.EXPECT().
+			GetDetailsExtended(testUsername).
+			Return(nil, authentication.ErrUserNotFound)
+
+		repository.errDelete = errTestSessionBackend
+		repository.errSave = []error{errTestSessionBackend}
+
+		rw, r := newTestOAuth2Request(t, fasthttp.MethodGet, testOIDCAuthorizationEndpoint, newTestOIDCAuthorizationValues())
+
+		OAuth2AuthorizationGET(mock.Ctx, rw, r)
+
+		require.Equal(t, http.StatusSeeOther, rw.Code)
+
+		location, err := url.Parse(rw.Header().Get(fasthttp.HeaderLocation))
+
+		require.NoError(t, err)
+
+		assert.Equal(t, "access_denied", location.Query().Get("error"))
+
+		var destroyed, saved bool
+
+		for _, entry := range mock.Hook.AllEntries() {
+			switch {
+			case strings.HasSuffix(entry.Message, "had an error while destroying session"):
+				destroyed = true
+
+				assert.ErrorIs(t, entry.Data["error"].(error), errTestSessionBackend)
+			case strings.HasSuffix(entry.Message, "had an error while saving updated session"):
+				saved = true
+
+				assert.ErrorIs(t, entry.Data["error"].(error), errTestSessionBackend)
+			}
+		}
+
+		assert.True(t, destroyed)
+		assert.True(t, saved)
+	})
+
 	t.Run("ShouldRedirectUserWithInsufficientAuthenticationLevelToFlow", func(t *testing.T) {
 		mock := mocks.NewMockAutheliaCtxWithUserSession(t, newTestOIDCUserSession(1))
 		defer mock.Close()

@@ -413,6 +413,37 @@ func TestUserSessionElevationPOST(t *testing.T) {
 			},
 		},
 		{
+			"ShouldHandleOneFactorFailNoEmailAddress",
+			func(t *testing.T, mock *mocks.MockAutheliaCtx) {
+				us, err := mock.Ctx.GetSession()
+
+				require.NoError(t, err)
+
+				us.Username = testUsername
+				us.AuthenticationMethodRefs.UsernameAndPassword = true
+
+				require.NoError(t, mock.Ctx.SaveSession(&us))
+
+				gomock.InOrder(
+					mock.RandomMock.EXPECT().
+						Read(gomock.Any()).
+						SetArg(0, []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x22, 0x09, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15}).
+						Return(16, nil),
+					mock.RandomMock.EXPECT().
+						BytesCustomErr(10, []byte(random.CharSetUnambiguousUpper)).
+						Return([]byte("ABC123ABC1"), nil),
+					mock.UserProviderMock.EXPECT().
+						GetDetails(gomock.Eq(testUsername)).
+						Return(&authentication.UserDetails{Username: testUsername, DisplayName: testDisplayName}, nil),
+				)
+			},
+			`{"status":"KO","message":"Operation failed."}`,
+			fasthttp.StatusForbidden,
+			func(t *testing.T, mock *mocks.MockAutheliaCtx) {
+				AssertLogEntryMessageAndError(t, mock.Hook.LastEntry(), "Error occurred creating user session elevation One-Time Code challenge for user 'john': error occurred retrieving the user details", "no email address was found for user")
+			},
+		},
+		{
 			"ShouldHandleOneFactorFailEmail",
 			func(t *testing.T, mock *mocks.MockAutheliaCtx) {
 				us, err := mock.Ctx.GetSession()
